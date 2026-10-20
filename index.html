@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>1500 Ngôi Sao Bay — Đèn Hoa Đăng</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #02030a;
+  }
+  canvas { display: block; }
+
+  .hint {
+    position: fixed;
+    left: 0; right: 0; bottom: 16px;
+    text-align: center;
+    color: rgba(255, 220, 170, .55);
+    font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    letter-spacing: 2px;
+    pointer-events: none;
+    text-transform: uppercase;
+    animation: fade 6s ease-in-out infinite;
+  }
+  @keyframes fade {
+    0%, 100% { opacity: .35; }
+    50%      { opacity: .9; }
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">1500 ngôi sao bay như đèn hoa đăng</div>
+
+<script>
+(() => {
+  "use strict";
+
+  /* ================== KHỞI TẠO CANVAS ================== */
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d", { alpha: false });
+
+  let W = 0, H = 0, DPR = 1, bgGrad = null;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+
+    canvas.width  = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    canvas.style.width  = W + "px";
+    canvas.style.height = H + "px";
+
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    // Nền trời đêm: trên lạnh, dưới ấm (ánh đèn hắt lên)
+    bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+    bgGrad.addColorStop(0.00, "#02030a");
+    bgGrad.addColorStop(0.45, "#050410");
+    bgGrad.addColorStop(0.80, "#0b0512");
+    bgGrad.addColorStop(1.00, "#150709");
+  }
+
+  /* ================== BẢNG MÀU ================== */
+  // Màu ấm chiếm ưu thế (đèn hoa đăng), thêm vài sắc lạnh cho lung linh
+  const COLORS = [
+    [255, 255, 235], // trắng ấm
+    [255, 232, 170], // vàng nhạt
+    [255, 205, 120], // vàng
+    [255, 170,  80], // cam vàng
+    [255, 130,  70], // cam
+    [255, 100, 110], // đỏ hồng
+    [170, 210, 255], // xanh băng
+    [150, 255, 220]  // xanh ngọc
+  ];
+  const WEIGHTS = [0.22, 0.27, 0.20, 0.13, 0.08, 0.05, 0.03, 0.02];
+
+  function pickColorIndex() {
+    let r = Math.random(), acc = 0;
+    for (let i = 0; i < WEIGHTS.length; i++) {
+      acc += WEIGHTS[i];
+      if (r < acc) return i;
+    }
+    return 1;
+  }
+
+  /* ============ SPRITE GLOW (cache để chạy nhanh) ============ */
+  const SPRITE_SIZE = 128;
+
+  function makeSprite(rgb) {
+    const s = document.createElement("canvas");
+    s.width = s.height = SPRITE_SIZE;
+    const g = s.getContext("2d");
+    const c = SPRITE_SIZE / 2;
+    const [r, gr, b] = rgb;
+
+    const grad = g.createRadialGradient(c, c, 0, c, c, c);
+    grad.addColorStop(0.00, "rgba(255,255,255,1)");
+    grad.addColorStop(0.10, `rgba(255,255,255,0.95)`);
+    grad.addColorStop(0.22, `rgba(${r},${gr},${b},0.85)`);
+    grad.addColorStop(0.45, `rgba(${r},${gr},${b},0.28)`);
+    grad.addColorStop(0.75, `rgba(${r},${gr},${b},0.06)`);
+    grad.addColorStop(1.00, `rgba(${r},${gr},${b},0)`);
+
+    g.fillStyle = grad;
+    g.beginPath();
+    g.arc(c, c, c, 0, Math.PI * 2);
+    g.fill();
+    return s;
+  }
+
+  const SPRITES = COLORS.map(makeSprite);
+
+  /* ================== HẠT SAO ================== */
+  const COUNT = 1000000000;          // tổng số ngôi sao
+  const parts = [];
+  const rand = (a, b) => a + Math.random() * (b - a);
+
+  function createParticle(y) {
+    // depth: 0 = xa (nhỏ, chậm), 1 = gần (to, nhanh)
+    const depth = Math.random();
+    const glow  = 5 + Math.pow(depth, 2.2) * 46;     // bán kính phát sáng
+    const ci    = pickColorIndex();
+
+    return {
+      bx:    Math.random() * W,                      // vị trí gốc theo x
+      y:     y,
+      glow:  glow,
+      depth: depth,
+      speed: 5 + Math.pow(depth, 1.6) * 52,          // tốc độ bay lên (px/s)
+      drift: (Math.random() - 0.5) * 10,             // trôi ngang chậm
+      amp:   4 + depth * 26,                         // biên độ lắc lư
+      freq:  0.15 + Math.random() * 0.55,            // tần số lắc
+      phase: Math.random() * Math.PI * 2,
+      alpha: 0.16 + depth * 0.48,                    // độ sáng
+      twSpeed: 0.8 + Math.random() * 2.2,            // tốc độ nhấp nháy
+      twPhase: Math.random() * Math.PI * 2,
+      sprite: SPRITES[ci]
+    };
+  }
+
+  function initParticles() {
+    parts.length = 0;
+    for (let i = 0; i < COUNT; i++) {
+      parts.push(createParticle(Math.random() * H));
+    }
+  }
+
+  /* ================== VÒNG LẶP ================== */
+  let t = 0;
+  let last = performance.now();
+
+  function loop(now) {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.05) dt = 0.05;   // tránh nhảy khi chuyển tab
+    t += dt;
+
+    // Gió thổi nhẹ, đổi chiều theo thời gian
+    const wind = Math.sin(t * 0.15) * 7;
+
+    // Vẽ nền
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, W, H);
+
+    // Cộng sáng để các đốm sáng chồng lên nhau rực rỡ
+    ctx.globalCompositeOperation = "lighter";
+
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+
+      // Bay lên
+      p.y -= p.speed * dt;
+      // Trôi ngang
+      p.bx += (p.drift + wind * (0.4 + p.depth)) * dt;
+
+      // Vượt mép trên -> tái sinh ở dưới
+      if (p.y < -p.glow - 30) {
+        p.y = H + p.glow + Math.random() * 150;
+        p.bx = Math.random() * W;
+      }
+      // Bọc ngang
+      if (p.bx < -100) p.bx = W + 100;
+      else if (p.bx > W + 100) p.bx = -100;
+
+      // Lắc lư hình sin
+      const x = p.bx + Math.sin(t * p.freq + p.phase) * p.amp;
+
+      // Nhấp nháy
+      const tw = 0.72 + 0.28 * Math.sin(t * p.twSpeed + p.twPhase);
+
+      ctx.globalAlpha = p.alpha * tw;
+
+      // Kéo dài theo phương thẳng đứng -> tạo cảm giác đang bay
+      const stretch = 1 + p.depth * 0.65;
+      const w = p.glow * 2;
+      const h = p.glow * 2 * stretch;
+
+      ctx.drawImage(p.sprite, x - w / 2, p.y - h / 2, w, h);
+    }
+
+    ctx.globalAlpha = 1;
+    requestAnimationFrame(loop);
+  }
+
+  /* ================== SỰ KIỆN ================== */
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      resize();
+      initParticles();   // phân bố lại theo kích thước màn hình mới
+    }, 150);
+  });
+
+  /* ================== CHẠY ================== */
+  resize();
+  initParticles();
+  requestAnimationFrame((t0) => {
+    last = t0;
+    loop(t0);
+  });
+})();
+</script>
+</body>
+</html>
